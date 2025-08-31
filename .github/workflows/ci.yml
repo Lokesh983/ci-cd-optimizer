@@ -1,36 +1,118 @@
-name: CI (Baseline)
+name: CI (Optimized)
 
 on:
   push:
     branches: ["**"]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Detect changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            src:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.eslintrc.json'
+            docs:
+              - '**/*.md'
+              - '**/*.txt'
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node (cache npm)
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-
-      - name: Install deps
-        run: npm ci
-
+          node-version: 20
+          cache: npm
+      - name: Install deps (fast)
+        run: npm ci --prefer-offline
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+  test:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Setup Node (matrix + cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install deps (fast)
+        run: npm ci --prefer-offline
+
+      - name: Test
+        run: npm test -- --ci --reporters=default
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.node-version }}
+          path: coverage
+
+  build:
+    needs: [lint, test]
+    if: needs.changes.outputs.src == 'true'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node (cache npm)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install deps (fast)
+        run: npm ci --prefer-offline
       - name: Build
         run: npm run build
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && needs.build.result == 'success' && needs.changes.outputs.src == 'true'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder deploy
+        run: |
+          echo "Replace this with your platform-specific deploy step."
+          echo "For example, configure a secret token and call the provider's CLI."
